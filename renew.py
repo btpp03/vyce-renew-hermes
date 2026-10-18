@@ -137,16 +137,42 @@ def github_login():
                 b.close()
                 raise RuntimeError("拿不到 GitHub 设备验证码")
             page.fill("#otp", code)
-            page.click("button[type=submit]:has-text('Verify')")
-            page.wait_for_load_state("domcontentloaded", timeout=90000)
+            # GitHub 输满 6 位常会自动提交，此时再点按钮会因已跳转而超时
+            try:
+                page.click("button[type=submit]:has-text('Verify')", timeout=8000)
+            except Exception as e:
+                log("otp 提交按钮跳过:", type(e).__name__)
+            try:
+                page.wait_for_load_state("domcontentloaded", timeout=90000)
+            except Exception:
+                pass
             time.sleep(3)
+            if "verified-device" in page.url:
+                page.fill("#otp", code)
+                page.click("button[type=submit]:has-text('Verify')", timeout=30000)
+                page.wait_for_load_state("domcontentloaded", timeout=90000)
+                time.sleep(3)
             log("login C:", page.url[:70])
         if "/login/oauth/authorize" in page.url:
-            page.evaluate("""() => { const b = Array.from(document.querySelectorAll('button'))
-                .find(e => (e.innerText||'').trim().toLowerCase().startsWith('authorize')); if (b) b.click(); }""")
-            page.wait_for_load_state("domcontentloaded", timeout=90000)
+            try:
+                page.evaluate("""() => { const b = Array.from(document.querySelectorAll('button'))
+                    .find(e => (e.innerText||'').trim().toLowerCase().startsWith('authorize')); if (b) b.click(); }""")
+            except Exception as e:
+                log("authorize 点击异常:", type(e).__name__)
+            try:
+                page.wait_for_load_state("domcontentloaded", timeout=90000)
+            except Exception:
+                pass
             time.sleep(4)
             log("login D:", page.url[:70])
+        # 用页面内 fetch 确认 session 真的生效
+        try:
+            page.goto(BASE + "/", wait_until="domcontentloaded", timeout=90000)
+            time.sleep(2)
+            chk = page.evaluate("""async () => { const r = await fetch('/api/me',{credentials:'same-origin'}); return r.status; }""")
+            log("post-login /api/me ->", chk)
+        except Exception as e:
+            log("post-login 校验异常:", type(e).__name__)
         sid = None
         for c in ctx.cookies():
             if c["name"] == "__Host-vyce_sid":
