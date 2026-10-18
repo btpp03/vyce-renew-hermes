@@ -13,6 +13,7 @@ import re
 import sys
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from email.header import decode_header
 
@@ -23,6 +24,37 @@ UA = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chr
 
 def log(*a):
     print(*a, flush=True)
+
+
+def bj(ts_ms):
+    """epoch ms → 北京时间字符串"""
+    import datetime
+    return (datetime.datetime.utcfromtimestamp(ts_ms / 1000)
+            + datetime.timedelta(hours=8)).strftime("%Y-%m-%d %H:%M")
+
+
+def tg(text):
+    """TG 通知（@btppnode_bot → 用户 DM，无话题）。未配置就静默跳过。"""
+    tok = os.environ.get("TG_BOT_TOKEN", "").strip()
+    chat = os.environ.get("TG_CHAT_ID", "").strip()
+    if not tok or not chat:
+        log("[tg] 未配置 TG_BOT_TOKEN/TG_CHAT_ID，跳过通知")
+        return
+    data = urllib.parse.urlencode({
+        "chat_id": chat, "text": text, "disable_web_page_preview": "true"
+    }).encode()
+    try:
+        req = urllib.request.Request(f"https://api.telegram.org/bot{tok}/sendMessage", data=data)
+        with urllib.request.urlopen(req, timeout=30) as r:
+            log("[tg] 发送 ->", json.loads(r.read().decode()).get("ok"))
+    except Exception as e:
+        log("[tg] 发送失败:", e)
+
+
+def fail(msg):
+    log("FAIL:", msg)
+    tg("❌ vyce.cloud 续期失败\n" + msg)
+    sys.exit(1)
 
 
 def api(path, method="GET", cookie=None, body=None):
@@ -189,7 +221,7 @@ def main():
     pat = os.environ.get("GH_PAT", "").strip()
     server_id = os.environ.get("VYCE_SERVER_ID", "").strip()
     if not server_id:
-        log("!! 缺 VYCE_SERVER_ID"); sys.exit(2)
+        fail("缺 VYCE_SERVER_ID secret")
 
     fresh = False
     st = 0
@@ -203,10 +235,10 @@ def main():
     # 确认服务器还在自己名下
     st, body = api("/api/servers", cookie=sid)
     if st != 200:
-        log("!! /api/servers ->", st, body[:200]); sys.exit(1)
+        fail(f"/api/servers 返回 {st}: {body[:150]}")
     ids = [s["id"] for s in json.loads(body).get("servers", [])]
     if server_id not in ids:
-        log("!! 服务器不在账号下（被删了？）:", ids); sys.exit(1)
+        fail(f"服务器不在账号名下（被删了？）现有: {ids}")
 
     st, body = api(f"/api/servers/{server_id}/renew", "POST", cookie=sid, body={})
     log("renew ->", st, body[:300])
@@ -220,18 +252,27 @@ def main():
         st2, b2 = api(f"/api/servers/{server_id}", cookie=sid)
         try:
             sv = json.loads(b2)["server"]
-            exp = time.strftime("%Y-%m-%d %H:%M UTC", time.gmtime(sv["expiresAt"] / 1000))
-            log(f"续期成功，新到期时间 {exp}，状态 {sv['status']}")
+            exp = bj(sv["expiresAt"])
+            log(f"续期成功，新到期 {exp}（北京时间），状态 {sv['status']}")
+            tg(f"🔁 vyce.cloud 续期成功\n"
+               f"{sv['name']} · {sv['status']}\n"
+               f"新到期 {exp}（北京时间）")
         except Exception:
             log("续期成功:", b2[:300])
+            tg("🔁 vyce.cloud 续期成功（取新到期时间失败，详情见 Actions 日志）")
     elif st == 429:
         log("冷却期内（24h 只能续一次），本次跳过")
     else:
-        log("!! 续期失败"); sys.exit(1)
+        fail(f"renew 返回 {st}: {body[:150]}")
 
     if fresh:
         put_secret("VYCE_SID", sid, pat)
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except SystemExit:
+        raise
+    except Exception as e:
+        fail(f"异常 {type(e).__name__}: {e}")

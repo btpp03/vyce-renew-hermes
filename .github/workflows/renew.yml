@@ -37,4 +37,6 @@ jobs:
           GMAIL_APP_PW: ${{ secrets.GMAIL_APP_PW }}
           GMAIL_USER: ${{ secrets.GMAIL_USER }}
           GH_PAT: ${{ secrets.GH_PAT }}
+          TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
+          TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
         run: python renew.py
