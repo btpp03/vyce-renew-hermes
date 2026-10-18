@@ -1,0 +1,40 @@
+name: vyce-renew
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '17 4,10,16,22 * * *'   # 每天 4 次；24h 冷却期内会返回 429 自动跳过
+
+permissions:
+  contents: read
+
+concurrency:
+  group: vyce-renew
+  cancel-in-progress: false
+
+jobs:
+  renew:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install deps
+        run: |
+          python -m pip install --quiet playwright pynacl
+          python -m playwright install --with-deps chromium
+
+      - name: Renew
+        env:
+          VYCE_SERVER_ID: ${{ secrets.VYCE_SERVER_ID }}
+          VYCE_SID: ${{ secrets.VYCE_SID }}
+          GH_USER: ${{ secrets.GH_USER }}
+          GH_PW: ${{ secrets.GH_PW }}
+          GMAIL_APP_PW: ${{ secrets.GMAIL_APP_PW }}
+          GMAIL_USER: ${{ secrets.GMAIL_USER }}
+          GH_PAT: ${{ secrets.GH_PAT }}
+        run: python renew.py
