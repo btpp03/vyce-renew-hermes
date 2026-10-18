@@ -14,6 +14,12 @@ vyce.cloud 免费 VPS（`Vps-Mini`）自动续期。免费机 24h 内只能续�
 - `workflow_dispatch`：cron-job.org 每 6 小时打一次 GitHub API（原生 `schedule` 不 fire，只能当兜底）
 - 24h 冷却期内调用返回 `429 renewal_cooldown`，属正常，脚本静默跳过
 
+## 通知
+
+- **只在真续期成功 / 失败时**推 TG（bot `@btppnode_bot` → chat `644320820`，不带 thread）
+- 冷却期跳过、正常运行时**完全静默**（不会每天刷消息）
+- 未配 `TG_BOT_TOKEN` / `TG_CHAT_ID` 就自动跳过通知
+
 ## Secrets
 
 | 名称 | 内容 |
