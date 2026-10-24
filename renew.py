@@ -354,7 +354,7 @@ def main():
     elif st == 400 and "captcha" in body:
         # 2026-10-24：站长新加 Bestcap 人机验证，无头浏览器能拿到 token 但服务端
         # 一律返回 invalid_captcha（本机/住宅出口/官方 UI 三种方式都一样）→ 平台侧校验坏了。
-        # 续期前不必刷屏：剩余时间 > 6h 就静默退出，靠外部高频重试腿盯；< 6h 才报警。
+        # 重试腿每 30 分钟一跳，为避免刷屏只在这几个 30 分钟带里各推一条 TG。
         left = None
         try:
             _, b2 = api(f"/api/servers/{server_id}", cookie=sid)
@@ -363,12 +363,24 @@ def main():
             log(f"captcha 校验被服务端拒绝，剩余 {left:.1f}h（到期 {bj(sv['expiresAt'])}）")
         except Exception as e:
             log("查剩余时间失败:", e)
-        if left is not None and left > 6:
+        if fresh:
+            put_secret("VYCE_SID", sid, pat)
+        if left is None or left >= 6:
             log("剩余 >6h，静默跳过（等平台修 captcha，或等重试腿命中）")
-            if fresh:
-                put_secret("VYCE_SID", sid, pat)
             return
-        fail(f"captcha 校验被服务端拒绝（剩 {left if left is None else round(left,1)}h）: {body[:120]}")
+        band = None
+        if 5.5 <= left < 6:
+            band = "⏳ vyce 剩余不足 6 小时"
+        elif 0.5 <= left < 1:
+            band = "⏳ vyce 剩余不足 1 小时"
+        elif left < 0.5:
+            band = "🚨 vyce 即将到期"
+        if band:
+            tg(f"{band}（{left:.1f}h，到期 {bj(int((time.time() + left * 3600) * 1000))} 北京时间）\n"
+               f"站方 captcha 校验仍然失败，续期腿每 30 分钟自动重试；"
+               f"若一直不修就手动去 vyce.cloud 点 Renew。")
+        else:
+            log("窗口内静默（每 30 分钟一跳，只在 6h/1h/最后半小时各推一次）")
     else:
         fail(f"renew 返回 {st}: {body[:150]}")
 
