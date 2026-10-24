@@ -20,6 +20,7 @@ from email.header import decode_header
 BASE = "https://vyce.cloud"
 REPO = os.environ.get("GITHUB_REPOSITORY", "btpp03/vyce-renew-hermes")
 UA = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+SITEKEY = os.environ.get("BESTCAP_SITEKEY", "bc_site_b05a3b42a31232929d6194f3")
 
 
 def log(*a):
@@ -216,6 +217,88 @@ def github_login():
     return sid
 
 
+def browser_renew(sid, server_id, attempts=3):
+    """2026-10-24 起 renew 需要 Bestcap 人机验证：
+    用无头 Chromium 打开站点 → 渲染 bestcap 挂件 → 点复选框拿 token
+    → 在页面内 fetch 提交 renew（同源，带 cookie/Origin）。返回 (status, body)。
+    """
+    from playwright.sync_api import sync_playwright
+
+    js_render = """async (sk) => {
+      const old = document.getElementById('hermes-bc');
+      if (old) old.remove();
+      const el = document.createElement('div');
+      el.id = 'hermes-bc'; el.className = 'bestcap';
+      el.style.cssText = 'position:fixed;left:10px;top:10px;z-index:99999;background:#fff;';
+      document.body.appendChild(el);
+      window.__tok = null; window.__err = null;
+      window.bestcap.render(el, {sitekey: sk,
+        callback: (t) => { window.__tok = t; },
+        'expired-callback': () => { window.__err = 'expired'; },
+        'error-callback': (e) => { window.__err = 'error:' + String(e); }});
+      return true;
+    }"""
+
+    last = (0, "no attempt")
+    with sync_playwright() as p:
+        b = p.chromium.launch(headless=True, args=["--no-sandbox", "--disable-dev-shm-usage"])
+        ctx = b.new_context(viewport={"width": 1100, "height": 800}, user_agent=UA)
+        ctx.add_cookies([{"name": "__Host-vyce_sid", "value": sid,
+                          "url": BASE, "secure": True, "httpOnly": True, "sameSite": "Lax"}])
+        page = ctx.new_page()
+        page.goto(BASE + "/#/servers", wait_until="domcontentloaded", timeout=90000)
+        ok = False
+        for _ in range(60):
+            try:
+                if page.evaluate("() => !!(window.bestcap && window.bestcap.render)"):
+                    ok = True
+                    break
+            except Exception:
+                pass
+            time.sleep(0.5)
+        if not ok:
+            b.close()
+            raise RuntimeError("bestcap 脚本没加载出来")
+        sk = SITEKEY
+        for i in range(attempts):
+            page.evaluate(js_render, sk)
+            time.sleep(2.5)
+            try:
+                page.frame_locator("iframe[title='Bestcap human verification']").locator("#check").click(timeout=20000)
+            except Exception as e:
+                log(f"captcha 点击失败({i+1}):", type(e).__name__)
+            tok = None
+            for _ in range(45):
+                tok = page.evaluate("() => window.__tok")
+                if tok:
+                    break
+                time.sleep(1)
+            if not tok:
+                log(f"captcha 未出 token({i+1}), err=", page.evaluate("() => window.__err"))
+                continue
+            log(f"captcha token #{i+1} len", len(tok))
+            last = page.evaluate("""async ([id, tk]) => {
+                const r = await fetch('/api/servers/' + id + '/renew', {
+                  method: 'POST', headers: {'Content-Type': 'application/json'},
+                  body: JSON.stringify({captchaResponse: tk})});
+                return [r.status, await r.text()];
+            }""", [server_id, tok])
+            log("renew(browser) ->", last[0], str(last[1])[:200])
+            if last[0] in (200, 401, 429):
+                break
+            if "captcha" not in str(last[1]):
+                break
+            time.sleep(3)
+        try:
+            for c in ctx.cookies():
+                if c["name"] == "__Host-vyce_sid":
+                    globals()["_NEW_SID"] = c["value"]
+        except Exception:
+            pass
+        b.close()
+    return last
+
+
 def main():
     sid = os.environ.get("VYCE_SID", "").strip()
     pat = os.environ.get("GH_PAT", "").strip()
@@ -240,12 +323,14 @@ def main():
     if server_id not in ids:
         fail(f"服务器不在账号名下（被删了？）现有: {ids}")
 
-    st, body = api(f"/api/servers/{server_id}/renew", "POST", cookie=sid, body={})
+    st, body = browser_renew(sid, server_id)
+    body = str(body)
     log("renew ->", st, body[:300])
     if st == 401 and not fresh:
         sid = github_login()
         fresh = True
-        st, body = api(f"/api/servers/{server_id}/renew", "POST", cookie=sid, body={})
+        st, body = browser_renew(sid, server_id)
+        body = str(body)
         log("renew(retry) ->", st, body[:300])
 
     if st == 200:
@@ -262,6 +347,24 @@ def main():
             tg("🔁 vyce.cloud 续期成功（取新到期时间失败，详情见 Actions 日志）")
     elif st == 429:
         log("冷却期内（24h 只能续一次），本次跳过")
+    elif st == 400 and "captcha" in body:
+        # 2026-10-24：站长新加 Bestcap 人机验证，无头浏览器能拿到 token 但服务端
+        # 一律返回 invalid_captcha（本机/住宅出口/官方 UI 三种方式都一样）→ 平台侧校验坏了。
+        # 续期前不必刷屏：剩余时间 > 6h 就静默退出，靠外部高频重试腿盯；< 6h 才报警。
+        left = None
+        try:
+            _, b2 = api(f"/api/servers/{server_id}", cookie=sid)
+            sv = json.loads(b2)["server"]
+            left = (sv["expiresAt"] / 1000.0 - time.time()) / 3600.0
+            log(f"captcha 校验被服务端拒绝，剩余 {left:.1f}h（到期 {bj(sv['expiresAt'])}）")
+        except Exception as e:
+            log("查剩余时间失败:", e)
+        if left is not None and left > 6:
+            log("剩余 >6h，静默跳过（等平台修 captcha，或等重试腿命中）")
+            if fresh:
+                put_secret("VYCE_SID", sid, pat)
+            return
+        fail(f"captcha 校验被服务端拒绝（剩 {left if left is None else round(left,1)}h）: {body[:120]}")
     else:
         fail(f"renew 返回 {st}: {body[:150]}")
 
