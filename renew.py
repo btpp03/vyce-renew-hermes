@@ -327,6 +327,41 @@ def main():
     if server_id not in ids:
         fail(f"服务器不在账号名下（被删了？）现有: {ids}")
 
+    # 先看剩余时间：>25h 直接跳过，避免每跳都去点 captcha（站方会当机器人）
+    st0, b0 = api(f"/api/servers/{server_id}", cookie=sid)
+    left0 = None
+    try:
+        sv0 = json.loads(b0)["server"]
+        left0 = (sv0["expiresAt"] / 1000.0 - time.time()) / 3600.0
+        log(f"现状：{sv0['status']}，剩余 {left0:.1f}h（到期 {bj(sv0['expiresAt'])}）")
+    except Exception as e:
+        log("读服务器状态失败:", e)
+
+    # 已过期/已关机 → 优先走 start 兜底（平台按 Renew and start 处理，不校验 captcha）
+    if left0 is not None and left0 < 0:
+        st3, b3 = api(f"/api/servers/{server_id}/start",
+                      method="POST", cookie=sid, body={})
+        log("start 兜底 ->", st3, b3[:200])
+        if st3 == 200:
+            try:
+                sv3 = json.loads(b3)["server"]
+            except Exception:
+                sv3 = {}
+            if sv3.get("status") == "running" and sv3.get("expiresAt"):
+                exp3 = bj(sv3["expiresAt"])
+                log(f"start 兜底成功：running，新到期 {exp3}（北京时间）")
+                tg(f"🔁 vyce.cloud 续期成功（走 start 兜底，captcha 仍未修）\n"
+                   f"{sv3.get('name', '')} · running\n新到期 {exp3}（北京时间）")
+                if fresh:
+                    put_secret("VYCE_SID", sid, pat)
+                return
+        log("start 兜底没成功，继续走 captcha 续期")
+    elif left0 is not None and left0 > 6:
+        log(f"剩余 {left0:.1f}h > 6h，本次跳续期（进 6 小时窗口才动手）")
+        if fresh:
+            put_secret("VYCE_SID", sid, pat)
+        return
+
     st, body = browser_renew(sid, server_id)
     body = str(body)
     log("renew ->", st, body[:300])
@@ -367,6 +402,24 @@ def main():
             log("查剩余时间失败:", e)
         if fresh:
             put_secret("VYCE_SID", sid, pat)
+        # 2026-10-25 实测兜底：机器因未续期被关机后，POST /start 不校验 captcha，
+        # 平台按「Renew and start」处理 —— 返回 running 且 expiresAt = now + 48h。
+        # captcha 坏掉期间用它续命。
+        if left is not None and left < 0:
+            st3, b3 = api(f"/api/servers/{server_id}/start",
+                          method="POST", cookie=sid, body={})
+            log("兜底 start ->", st3, b3[:200])
+            if st3 == 200:
+                try:
+                    sv3 = json.loads(b3)["server"]
+                except Exception:
+                    sv3 = {}
+                if sv3.get("status") == "running" and sv3.get("expiresAt"):
+                    exp3 = bj(sv3["expiresAt"])
+                    log(f"start 兜底成功：running，新到期 {exp3}（北京时间）")
+                    tg(f"🔁 vyce.cloud 续期成功（走 start 兜底，captcha 仍未修）\n"
+                       f"{sv3.get('name', '')} · running\n新到期 {exp3}（北京时间）")
+                    return
         if left is None or left >= 6:
             log("剩余 >6h，静默跳过（等平台修 captcha，或等重试腿命中）")
             return
