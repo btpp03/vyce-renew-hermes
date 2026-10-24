@@ -217,11 +217,15 @@ def github_login():
     return sid
 
 
-def browser_renew(sid, server_id, attempts=3):
+def browser_renew(sid, server_id, attempts=None):
     """2026-10-24 起 renew 需要 Bestcap 人机验证：
     用无头 Chromium 打开站点 → 渲染 bestcap 挂件 → 点复选框拿 token
     → 在页面内 fetch 提交 renew（同源，带 cookie/Origin）。返回 (status, body)。
+
+    attempts 默认 1：站方校验坏的时候重试再多也没用，别把账号刷成机器人。
     """
+    if attempts is None:
+        attempts = int(os.environ.get("CAPTCHA_ATTEMPTS", "1"))
     from playwright.sync_api import sync_playwright
 
     js_render = """async (sk) => {
