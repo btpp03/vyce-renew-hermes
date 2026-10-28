@@ -330,15 +330,18 @@ def main():
     # 先看剩余时间：>25h 直接跳过，避免每跳都去点 captcha（站方会当机器人）
     st0, b0 = api(f"/api/servers/{server_id}", cookie=sid)
     left0 = None
+    status0 = None
     try:
         sv0 = json.loads(b0)["server"]
+        status0 = sv0["status"]
         left0 = (sv0["expiresAt"] / 1000.0 - time.time()) / 3600.0
-        log(f"现状：{sv0['status']}，剩余 {left0:.1f}h（到期 {bj(sv0['expiresAt'])}）")
+        log(f"现状：{status0}，剩余 {left0:.1f}h（到期 {bj(sv0['expiresAt'])}）")
     except Exception as e:
         log("读服务器状态失败:", e)
 
-    # 已过期/已关机 → 优先走 start 兜底（平台按 Renew and start 处理，不校验 captcha）
-    if left0 is not None and left0 < 0:
+    # 已过期且已关机 → 优先走 start 兜底（平台按 Renew and start 处理，不校验 captcha）
+    # 只在 status 真是 stopped 时调，避免对运行中的机器误触发
+    if left0 is not None and left0 < 0 and status0 == "stopped":
         st3, b3 = api(f"/api/servers/{server_id}/start",
                       method="POST", cookie=sid, body={})
         log("start 兜底 ->", st3, b3[:200])
@@ -389,7 +392,7 @@ def main():
     elif st == 400 and "captcha" in body:
         # 2026-10-24：站长新加 Bestcap 人机验证，无头浏览器能拿到 token 但服务端
         # 一律返回 invalid_captcha（本机/住宅出口/官方 UI 三种方式都一样）→ 平台侧校验坏了。
-        # 重试腿每 30 分钟一跳，为避免刷屏只在这几个 30 分钟带里各推一条 TG。
+        # 重试腿每小时一跳，为避免刷屏只在这几个带里各推一条 TG。
         left = None
         exp_ms = None
         try:
@@ -431,17 +434,17 @@ def main():
         elif 0 <= left < 0.5:
             band = "🚨 vyce 即将到期"
         elif -0.5 <= left < 0:
-            # 刚过期那一次（30 分钟一跳，所以最多推 1~2 次，之后静默防刷屏）
+            # 刚过期那一次（每小时一跳，最多推 1~2 次，之后静默防刷屏）
             band = "🚨 vyce 已过期（机器已关机），数据还能留 3 天，修好即续上"
         if band:
             extra = ""
             if left < 0:
                 extra = f"数据保留到 {bj((exp_ms or 0) + 3 * 86400000)} 北京时间。"
             tg(f"{band}（{left:.1f}h，到期 {bj(int((time.time() + left * 3600) * 1000))} 北京时间）\n"
-               f"站方 captcha 校验仍然失败，续期腿每 30 分钟自动重试；{extra}"
+               f"站方 captcha 校验仍然失败，续期腿每小时自动重试（过期关机后会自动用 /start 兜底救回）；{extra}"
                f"若一直不修就手动去 vyce.cloud 点 Renew。")
         else:
-            log("窗口内静默（每 30 分钟一跳，只在 6h/1h/最后半小时/刚过期各推一次）")
+            log("窗口内静默（每小时一跳，只在 6h/1h/最后半小时/刚过期各推一次）")
     else:
         fail(f"renew 返回 {st}: {body[:150]}")
 
