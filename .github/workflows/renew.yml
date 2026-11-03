@@ -3,7 +3,7 @@ name: vyce-renew
 on:
   workflow_dispatch:
   schedule:
-    - cron: '17 4,10,16,22 * * *'   # 每天 4 次；24h 冷却期内会返回 429 自动跳过
+    - cron: '17 1,13 * * *'   # 每 12 小时（BJT 09:17 / 21:17）；48h 有效期 + 2h 宽限 + 3 天删除窗口，容错足够
 
 permissions:
   contents: read
